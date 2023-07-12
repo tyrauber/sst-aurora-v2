@@ -1,5 +1,5 @@
 {
-  "name": "@sst-aurora-v2/functions",
+  "name": "@sst-aurora-v2/core",
   "version": "0.0.0",
   "type": "module",
   "scripts": {
@@ -7,15 +7,12 @@
     "typecheck": "tsc -noEmit"
   },
   "devDependencies": {
-    "@types/aws-lambda": "^8.10.119",
-    "@types/node": "^20.4.1",
-    "sst": "^2.19.2",
-    "vitest": "^0.33.0"
+    "@types/node": "^20.1.7",
+    "sst": "^2.8.23",
+    "vitest": "^0.31.0"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.369.0",
-    "@sst-aurora-v2/core": "*",
-    "aws-sdk": "^2.1413.0",
     "postgres": "^3.3.5"
   }
 }

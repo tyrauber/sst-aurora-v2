@@ -1,12 +1,10 @@
-
 import { APIGatewayProxyEventV2 } from "aws-lambda";
-import postgres from 'postgres'
+import Database from "@sst-aurora-v2/core/database";
 
 export const main = async (event: APIGatewayProxyEventV2) => {
   try{
-    const sql = postgres(process.env.WRITER_URL);
-    const query = await sql`SELECT version();`;
-    console.log({query});
+    const { sql } = await Database({ RDS_SECRET_ARN: process.env.RDS_SECRET_ARN });
+    const query = await sql`SELECT version() as Postgres;`;
     return {
       statusCode: 200,
       body: JSON.stringify(query),

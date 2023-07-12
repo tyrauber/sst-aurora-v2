@@ -3,86 +3,55 @@ Serverless Stack (SST) Autora V2 RDS Postgres API
 
 SST RDS construct does not currently support V2. This example demonstates a minimal implementation of Aurora V2 in SST using `aws-cdk-lib/aws-rds`.
 
-**Note: Local SST dev mode does not work with VPC.** Therefore, to use RDS locally you must set the RDS instance to public, or utilize BastionHost or a VPN to connect to the private VPC.
+This implementation is optimized for security and performance, using a private RDS instance, VPC and Subnet, and [Postgres.js](https://github.com/porsager/postgres) for quick SQL queries.
 
-## Stack
+Roundtrip from an ec2 instance, in the same region (us-east-1), to the lambda, to RDS, and back, takes roughly 150ms with a simple `SELECT version()`.
 
-### /stacks/Network
+``````
+[ec2-user@ip ~]$ curl -o /dev/null -s -w 'Total: %{time_total}s\n'  https://x.execute-api.us-east-1.amazonaws.com
+Total: 0.132562s
+``````
 
-```
-import { StackContext } from 'sst/constructs';
-import { SecurityGroup, Vpc } from 'aws-cdk-lib/aws-ec2';
+## Usage:
 
-export function Network({ stack, app }: StackContext) {
-  const vpc = new Vpc(stack, app.logicalPrefixedName('net'), { natGateways: 1 });
-  const sg = new SecurityGroup(stack, 'DefaultLambda', { vpc, description: 'Default security group' });
-  app.setDefaultFunctionProps({ vpc, securityGroups: [sg] });
-  sg.addEgressRule(Peer.anyIpv4(), Port.tcp(5432))
-  return { vpc, sg };
-}
-```
+1. Clone: `git clone github.com/tyrauber/sst-aurora-v2`
+2. Insall Dependencies: `pnpm install`
+3. Run `pnpm run dev` or `pnpm run deploy --stage dev`
 
-### /stacks/Database
-```
-import { StackContext, use } from 'sst/constructs';
-import { Token } from 'aws-cdk-lib';
-import * as AWS_RDS from "aws-cdk-lib/aws-rds";
-import * as ec2 from 'aws-cdk-lib/aws-ec2';
+Note: It will take upwards of 10 minutes to build and deploy the stack.
 
-import { Network } from './Network';
+## Security
 
-export function Database({ stack, app }: StackContext) {
-  const net = use(Network);
-  const rds = new AWS_RDS.DatabaseCluster(stack, "DB", {
-    clusterIdentifier: `${app.name}-${app.stage}`,
-    engine: AWS_RDS.DatabaseClusterEngine.auroraPostgres({
-      version: AWS_RDS.AuroraPostgresEngineVersion.VER_14_4,
-    }),
-    instances: 1,
-    instanceProps: {
-      vpc: net.vpc,
-      instanceType: "serverless" as any,
-      autoMinorVersionUpgrade: true,
-      publiclyAccessible: true,
-      securityGroups: [net.sg],
-      vpcSubnets: net.vpc.selectSubnets({
-        subnetType: ec2.SubnetType.PUBLIC,
-        /* Public for Local, Private for all other stages */
-        //subnetType: app.local ?  ec2.SubnetType.PUBLIC : ec2.SubnetType.PRIVATE
-      }),
-    },
-  });
-  (
-    rds.node.findChild("Resource") as AWS_RDS.CfnDBCluster
-  ).serverlessV2ScalingConfiguration = {
-    minCapacity: 0.5,
-    maxCapacity: 4,
-  }
- 
-  /* To-Do: The Lamaba should use Secrets Manager to get the credentials and construct the Database URL */
-  const WRITER_URL = `postgres://${rds.secret?.secretValueFromJson('username')}:${rds.secret?.secretValueFromJson('password')}@${Token.asString(rds.clusterEndpoint.hostname)}:${rds.secret?.secretValueFromJson('port')}/postgres`;
-  const READER_URL = `postgres://${rds.secret?.secretValueFromJson('username')}:${rds.secret?.secretValueFromJson('password')}@${Token.asString(rds.clusterReadEndpoint.hostname)}:${rds.secret?.secretValueFromJson('port')}/postgres`;
+This architecture defaults to a private RDS instance, unless `app.local` or `process.env.PUBLIC_DB` is set to true. If either of these conditions are true, the Databse Stack sets `publiclyAccessible` to true, and the `vpcSubnets.subnetType` to `ec2.SubnetType.PUBLIC`. Once deployed, these conditions cannot be changed.
 
-  rds.connections.allowFromAnyIpv4(ec2.Port.tcp(5432))
-  app.addDefaultFunctionEnv({WRITER_URL, READER_URL});
-  
-  stack.addOutputs({
-    writer: Token.asString(rds.clusterEndpoint.hostname),
-    reader: Token.asString(rds.clusterReadEndpoint.hostname)
-  });
+It is worth noting, setting the RDS instance to public DOES NOT negatively impact performance. Response times are similar to above under the same conditions, suggesting the API uses the private VPC to connect to the RDS instance, even when the instance is set to public!
 
-  return rds
-}
-```
+## Architecture:
 
-### Additional Notes:
+- / stacks
+  - / [API.ts](stacks/API.ts)
+  - / [Database.ts](stacks/Database.ts)
+  - / [Network.ts](stacks/Network.ts)
+- / packages
+  - functions/src
+    - [status.ts](packages/functions/src/status.ts)
+  - core/src
+    - [database.ts](packages/core/src/database.ts)
 
-With this configuration, the vpc.subnetType determines whether the database instance is publicly accessible:
+## To-Do:
 
-```
-  vpcSubnets: net.vpc.selectSubnets({
-    subnetType: ec2.SubnetType.PUBLIC,
-    /* Public for Local, Private for all other stages */
-    //subnetType: app.local ?  ec2.SubnetType.PUBLIC : ec2.SubnetType.PRIVATE
-  })
-```
+- [ ] Make VPC, SecurityGroup and RDS instance shareable between stacks
+- [ ] Add BastionHost, for SSH access
+- [ ] IAM RDS Access
+- [ ] Add database migrations
+
+## Documentation
+
+- [SST Docs](https://docs.sst.dev/)
+- [Aurora Serverless v2 #2506](https://github.com/serverless-stack/sst/issues/2506)
+- [lefnire's Aurora V2 gist](https://gist.github.com/lefnire/dff175eabdcaec8fdf15c6acfb5bd3e1)
+- [jetbridge/sst-prisma](https://github.com/jetbridge/sst-prisma)
+
+## Special Thanks
+
+Special thanks to @lefnire for the Aurora V2 gist.

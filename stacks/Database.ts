@@ -2,28 +2,27 @@ import { StackContext, use } from 'sst/constructs';
 import { Token } from 'aws-cdk-lib';
 import * as AWS_RDS from "aws-cdk-lib/aws-rds";
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from "aws-cdk-lib/aws-iam";
 
 import { Network } from './Network';
 
 export function Database({ stack, app }: StackContext) {
-  const net = use(Network);
+  const { sg, vpc } = use(Network);
   const rds = new AWS_RDS.DatabaseCluster(stack, "DB", {
     clusterIdentifier: `${app.name}-${app.stage}`,
     engine: AWS_RDS.DatabaseClusterEngine.auroraPostgres({
-      version: AWS_RDS.AuroraPostgresEngineVersion.VER_14_4,
+      version: AWS_RDS.AuroraPostgresEngineVersion.VER_15_2,
     }),
     instances: 1,
     instanceProps: {
-      vpc: net.vpc,
-      instanceType: "serverless" as any,
-      autoMinorVersionUpgrade: true,
-      publiclyAccessible: true,
-      securityGroups: [net.sg],
-      vpcSubnets: net.vpc.selectSubnets({
-        subnetType: ec2.SubnetType.PUBLIC,
-        /* Public for Local, Private for all other stages */
-        //subnetType: app.local ?  ec2.SubnetType.PUBLIC : ec2.SubnetType.PRIVATE
-      }),
+        vpc,
+        vpcSubnets: {
+          subnetType: !!(app.local || process.env.PUBLIC_DB) ? ec2.SubnetType.PUBLIC : ec2.SubnetType.PRIVATE_ISOLATED
+        },
+        publiclyAccessible: !!(app.local || process.env.PUBLIC_DB),
+        instanceType: "serverless" as any,
+        autoMinorVersionUpgrade: true,
+        securityGroups: [sg]
     },
   });
   (
@@ -32,18 +31,32 @@ export function Database({ stack, app }: StackContext) {
     minCapacity: 0.5,
     maxCapacity: 4,
   }
- 
-  /* To-Do: The Lamaba should use Secrets Manager to get the credentials and construct the Database URL */
-  const WRITER_URL = `postgres://${rds.secret?.secretValueFromJson('username')}:${rds.secret?.secretValueFromJson('password')}@${Token.asString(rds.clusterEndpoint.hostname)}:${rds.secret?.secretValueFromJson('port')}/postgres`;
-  const READER_URL = `postgres://${rds.secret?.secretValueFromJson('username')}:${rds.secret?.secretValueFromJson('password')}@${Token.asString(rds.clusterReadEndpoint.hostname)}:${rds.secret?.secretValueFromJson('port')}/postgres`;
 
-  rds.connections.allowFromAnyIpv4(ec2.Port.tcp(5432))
-  app.addDefaultFunctionEnv({WRITER_URL, READER_URL});
-  
+  const readSecretPolicy = new iam.PolicyStatement({
+    actions: [
+      "secretsmanager:GetResourcePolicy",
+       "secretsmanager:GetSecretValue",
+       "secretsmanager:DescribeSecret",
+       "secretsmanager:ListSecretVersionIds" ],
+    effect: iam.Effect.ALLOW,
+    resources: [ rds.secret!.secretArn ],
+  })
+
+  app.addDefaultFunctionEnv({
+    WRITER_ENDPOINT: Token.asString(rds.clusterEndpoint.hostname),
+    READER_ENDPOINT: Token.asString(rds.clusterReadEndpoint.hostname),
+    RDS_SECRET_ARN: rds.secret!.secretArn
+  });
+
+  app.setDefaultFunctionProps({
+    vpc,
+    vpcSubnets: {subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS},
+  })
+
   stack.addOutputs({
     writer: Token.asString(rds.clusterEndpoint.hostname),
     reader: Token.asString(rds.clusterReadEndpoint.hostname)
   });
 
-  return rds
+  return { rds, policies: [readSecretPolicy] };
 }
