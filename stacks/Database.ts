@@ -7,29 +7,33 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import { Network } from './Network';
 
 export function Database({ stack, app }: StackContext) {
+  let rds;
   const { sg, vpc } = use(Network);
-  const rds = new AWS_RDS.DatabaseCluster(stack, "DB", {
-    clusterIdentifier: `${app.name}-${app.stage}`,
-    engine: AWS_RDS.DatabaseClusterEngine.auroraPostgres({
-      version: AWS_RDS.AuroraPostgresEngineVersion.VER_15_2,
-    }),
-    instances: 1,
-    instanceProps: {
-        vpc,
-        vpcSubnets: {
-          subnetType: !!(app.local || process.env.PUBLIC_DB) ? ec2.SubnetType.PUBLIC : ec2.SubnetType.PRIVATE_ISOLATED
-        },
-        publiclyAccessible: !!(app.local || process.env.PUBLIC_DB),
-        instanceType: "serverless" as any,
-        autoMinorVersionUpgrade: true,
-        securityGroups: [sg]
-    },
+  const identifier = process.env.RDSID ? process.env.RDSID : `${app.name}-${app.stage}`;
+  rds = AWS_RDS.DatabaseCluster.fromDatabaseClusterAttributes(stack, "DB", {
+    cluster_identifier: identifier
   });
-  (
-    rds.node.findChild("Resource") as AWS_RDS.CfnDBCluster
-  ).serverlessV2ScalingConfiguration = {
-    minCapacity: 0.5,
-    maxCapacity: 4,
+
+  if(!rds?.clusterIdentifier){
+    rds = new AWS_RDS.DatabaseCluster(this, 'Database', {
+      clusterIdentifier: identifier,
+      engine: AWS_RDS.DatabaseClusterEngine.auroraPostgres({
+        version: AWS_RDS.AuroraPostgresEngineVersion.VER_15_2 
+      }),
+      writer: AWS_RDS.ClusterInstance.serverlessV2('writer', {
+        publiclyAccessible: !!(app.local || process.env.PUBLIC_DB),
+      }),
+      // readers: [
+      //   AWS_RDS.ClusterInstance.serverlessV2('reader'),
+      // ],
+      vpcSubnets: {
+        subnetType: !!(app.local || process.env.PUBLIC_DB) ? ec2.SubnetType.PUBLIC : ec2.SubnetType.PRIVATE_ISOLATED
+      },
+      vpc,
+      securityGroups: [sg],
+      serverlessV2MinCapacity: 0.5,
+      serverlessV2MaxCapacity: 2,
+    });
   }
 
   const readSecretPolicy = new iam.PolicyStatement({
@@ -54,8 +58,9 @@ export function Database({ stack, app }: StackContext) {
   })
 
   stack.addOutputs({
-    writer: Token.asString(rds.clusterEndpoint.hostname),
-    reader: Token.asString(rds.clusterReadEndpoint.hostname)
+    RDSID: rds.clusterIdentifier,
+    WRITER: Token.asString(rds.clusterEndpoint.hostname),
+    READER: Token.asString(rds.clusterReadEndpoint.hostname)
   });
 
   return { rds, policies: [readSecretPolicy] };
